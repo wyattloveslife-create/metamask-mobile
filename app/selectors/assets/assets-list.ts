@@ -164,6 +164,14 @@ const selectStakedAssets = createDeepEqualSelector(
     currencyRates,
     currentCurrency,
   ) => {
+    // Pre-build a Map for O(1) lookups instead of O(n) .find() per address
+    const accountByAddress = new Map(
+      Object.values(internalAccounts).map((account) => [
+        account.address.toLowerCase(),
+        account,
+      ]),
+    );
+
     const stakedAssets = Object.entries(accountsByChainId)
       // Only include mainnet and hoodi
       .filter(([chainId, _]) => chainId === '0x1' || chainId === '0x88bb0')
@@ -195,10 +203,7 @@ const selectStakedAssets = createDeepEqualSelector(
               ? weiToFiatNumber(hexToBN(stakedBalance), conversionRate)
               : undefined;
 
-            const account = Object.values(internalAccounts).find(
-              (internalAccount) =>
-                internalAccount.address === address.toLowerCase(),
-            );
+            const account = accountByAddress.get(address.toLowerCase());
 
             if (!account) {
               return undefined;
@@ -266,8 +271,10 @@ export const createSelectSortedAssetsBySelectedAccountGroup = (
       selectStakedAssets,
     ],
     (bip44Assets, enabledNetworks, tokenSortConfig, stakedAssets) => {
+      // Use a Set for O(1) per-network lookup instead of O(n) Array.includes()
+      const enabledNetworksSet = new Set(enabledNetworks);
       const filteredAssets = Object.entries(bip44Assets)
-        .filter(([networkId]) => enabledNetworks.includes(networkId))
+        .filter(([networkId]) => enabledNetworksSet.has(networkId))
         .flatMap(([_, chainAssets]) =>
           chainAssets.filter(
             (asset) => !isTronSpecialAsset(asset.chainId, asset.symbol),
@@ -297,6 +304,9 @@ interface StakedAssetEntry {
   stakedAsset: Asset;
 }
 
+const getStakedAssetKey = (chainId: string, accountId: string) =>
+  `${chainId}-${accountId}`;
+
 /**
  * Merges staked assets into the list, sorts by token sort config, and deduplicates by assetId-chainId-isStaked.
  * Shared by createSelectSortedAssetsBySelectedAccountGroup and selectSortedAssetsBySelectedAccountGroupForChainIds.
@@ -306,13 +316,20 @@ function mergeStakedSortAndDedupeAssets(
   stakedAssets: StakedAssetEntry[],
   tokenSortConfig: ReturnType<typeof selectTokenSortConfig>,
 ): SortedAssetItem[] {
+  // Pre-build a Map for O(1) staked-asset lookups instead of O(n) .find() per asset
+  const stakedAssetMap = new Map<string, StakedAssetEntry>(
+    stakedAssets.map((item) => [
+      getStakedAssetKey(item.chainId, item.accountId),
+      item,
+    ]),
+  );
+
   const assets = [...filteredChainAssets];
   const stakedAssetsArray: Asset[] = [];
   for (const asset of assets) {
     if (asset.isNative) {
-      const stakedAsset = stakedAssets.find(
-        (item) =>
-          item.chainId === asset.chainId && item.accountId === asset.accountId,
+      const stakedAsset = stakedAssetMap.get(
+        getStakedAssetKey(asset.chainId, asset.accountId as string),
       );
       if (stakedAsset) {
         stakedAssetsArray.push({ ...stakedAsset.stakedAsset } as Asset);
